@@ -1,11 +1,19 @@
 import requests
 from urllib.parse import urljoin
+import time
 
 base_url = "http://localhost:80/"
 
+request_timeout = 2
+request_delay = 0.1
+general_results = []
+possible_routes_api = []
+
+
+
 top_level = ["admin", "users", "register", "login", "api", "products", "orders", 
-             "payments", "invoices", "files", "images", "videos", "settings",
-             "projects", "reset-password"]
+             "payments", "invoices", "files", "images", "videos", "settings",   
+             "projects", "reset-password", "get", "post", "headers", "status"]
 
 
 subpaths = [
@@ -58,7 +66,6 @@ subpaths = [
 ]
 
 
-possible_routes_api = []
 
 
 def concatenate_routes(top_level, subpaths):
@@ -70,14 +77,34 @@ def concatenate_routes(top_level, subpaths):
             possible_routes_api.append(full_url)
 
 
-
 def save_output():
     with open("saida.txt", "w", encoding="utf-8") as arquivo:
-                for linha in possible_routes_api:
+                for linha in general_results:
                     print(linha, file=arquivo)
 
 def requests_send():
-     requests.post()
+    total = len(possible_routes_api)
+    for idx, routes in enumerate(possible_routes_api, 1):
+        try:
+            possible_request = requests.head(routes, timeout=request_timeout)
+
+            if(possible_request.status_code != 404):
+                linha = f"{routes} -> {possible_request.status_code}"
+                print(linha)
+                general_results.append(linha)
+
+        except requests.exceptions.RequestException as erro:
+            print(f"ERRO: {erro}")
+
+        if idx % 50 == 0:
+            print(f"Progresso: {idx}/{total}")
+
+        time.sleep(request_delay)
 
 def main():
       concatenate_routes(top_level, subpaths)
+      requests_send()
+      save_output()
+
+
+main()
