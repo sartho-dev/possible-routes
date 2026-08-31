@@ -1,7 +1,6 @@
 import requests
 from urllib.parse import urljoin, urlparse
 import time
-import http.client
 import socket
 
 
@@ -49,17 +48,57 @@ def extract_from_path(url):
     first_path = path.split("/")[1] 
 
     return first_path 
-     
+
+
+def parse_url(url):
+
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or 80
+    path = parsed.path    
+
+    return host, port, path 
+
+def create_socket(routes):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        
+        host, port, path = parse_url(routes)
+        
+        sock.connect((host, port))
+        
+        request = f"HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode()
+        sock.sendall(request)
+        
+        response = b""
+        while True:
+            chunck = sock.recv(4096)
+            if not chunck:
+                break
+            response += chunck
+    finally:
+        sock.close()
+
+    return response
+
+
 def requests_send():
     total = len(possible_routes_api)
     for idx, routes in enumerate(possible_routes_api, 1):
         try:
-            possible_request = requests.head(routes, timeout=request_timeout)
+            resp_bytes_text = create_socket(routes).decode("utf-8")
 
-            status_code = possible_request.status_code
+            if not resp_bytes_text:
+                status_code = 404
+            else:
+                first_line = resp_bytes_text.split("\r\n", 1)[0]
+                try:
+                    status_code = int(first_line.split(' ')[1])
+                except (IndexError, ValueError):
+                    status_code = 0
 
             first_path = extract_from_path(routes)
-
             key = (first_path, status_code)
 
             if(key not in results):
@@ -67,8 +106,12 @@ def requests_send():
 
             results[key].append(routes)
             
-        except requests.exceptions.RequestException as erro:
-            print(f"ERRO: {erro}")
+        except socket.timeout:
+            key = ("__erro__", "timeout")
+            results.setdefault(key, []).append(routes)
+        except ConnectionRefusedError:
+            key = ("__erro__", "connection_refused")
+            results.setdefault(key, []).append(routes)
 
         if idx % 50 == 0:
             print(f"Progresso: {idx}/{total}")
