@@ -1,72 +1,26 @@
 import requests
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import time
+import http.client
+import socket
+
 
 base_url = "http://localhost:80/"
 
-request_timeout = 2
-request_delay = 0.1
+request_timeout = 0.1
+request_delay = 0.01
 general_results = []
 possible_routes_api = []
+results = {}
 
 
+def load_wordlists():
+    with open("top-level.txt", "r", encoding="utf-8") as f:
+        top = [line.strip() for line in f if line.strip()]
+    with open("subpaths.txt", "r", encoding="utf-8") as f:
+        subs = [line.strip() for line in f if line.strip()]
 
-top_level = ["admin", "users", "register", "login", "api", "products", "orders", 
-             "payments", "invoices", "files", "images", "videos", "settings",   
-             "projects", "reset-password", "get", "post", "headers", "status"]
-
-
-subpaths = [
-    # Genéricos / CRUD
-    "list", "create", "new", "edit", "update", "delete", "remove",
-    "view", "show", "detail", "details", "get", "set", "add",
-    "save", "submit", "search", "filter", "export", "import",
-    "upload", "download", "print", "preview",
-
-    # Autenticação / Usuários
-    "login", "logout", "signin", "signup", "register", "auth",
-    "password", "reset-password", "forgot-password", "profile",
-    "account", "settings", "preferences", "roles", "permissions",
-    "sessions", "token", "refresh", "verify", "activate", "deactivate",
-
-    # API
-    "v1", "v2", "v3", "api", "rest", "graphql", "json", "xml",
-    "docs", "swagger", "openapi", "schema", "health", "status",
-    "version", "info", "config", "metrics", "logs", "debug",
-
-    # Administração
-    "admin", "dashboard", "panel", "manage", "management",
-    "configuration", "config", "setup", "install", "update",
-    "backup", "restore", "logs", "reports", "statistics", "stats",
-    "users", "groups", "permissions", "acl", "audit", "monitor",
-
-    # Conteúdo / Mídia
-    "files", "images", "uploads", "media", "assets", "static",
-    "public", "private", "thumbnails", "avatar", "cover", "photo",
-    "video", "audio", "document", "docs", "archive", "download",
-
-    # E-commerce
-    "products", "items", "orders", "cart", "checkout", "payment",
-    "payments", "invoice", "invoices", "billing", "shipping",
-    "categories", "tags", "reviews", "ratings", "coupons", "discounts",
-
-    # Comum em aplicações
-    "home", "index", "main", "about", "contact", "help", "faq",
-    "support", "terms", "privacy", "legal", "sitemap", "robots",
-    "feed", "rss", "atom", "blog", "news", "articles", "posts",
-    "comments", "messages", "notifications", "alerts", "events",
-    "calendar", "tasks", "projects", "clients", "partners", "team",
-
-    # Arquivos sensíveis / administrativos (para testes autorizados)
-    "backup", "db", "database", "dump", "sql", "conf", "config",
-    "env", "ini", "log", "logs", "tmp", "temp", "cache", "vendor",
-    "node_modules", "storage", "app", "src", "test", "tests",
-    "debug", "trace", "error", "errors", "phpinfo", "server-status",
-    "server-info", "console", "shell", "cmd", "exec",
-]
-
-
-
+    return top, subs
 
 def concatenate_routes(top_level, subpaths):
     for routes in top_level:
@@ -77,22 +31,42 @@ def concatenate_routes(top_level, subpaths):
             possible_routes_api.append(full_url)
 
 
-def save_output():
-    with open("saida.txt", "w", encoding="utf-8") as arquivo:
-                for linha in general_results:
-                    print(linha, file=arquivo)
+def save_output(groups):
+    with open("saida.txt", "w", encoding="utf-8") as archive:
+        filtered_items = [(k, v) for k, v in groups.items() if k[1] != 404]
 
+        sorted_items = sorted(filtered_items, key=lambda item: len(item[1]), reverse=False)
+
+        for (first_path, status_code), urls in sorted_items: 
+            line = f"{first_path}/* -> {status_code} ({len(urls)} ocorrências)"
+            print(line,file=archive)
+
+
+def extract_from_path(url):
+
+    parsed = urlparse(url)
+    path = parsed.path
+    first_path = path.split("/")[1] 
+
+    return first_path 
+     
 def requests_send():
     total = len(possible_routes_api)
     for idx, routes in enumerate(possible_routes_api, 1):
         try:
             possible_request = requests.head(routes, timeout=request_timeout)
 
-            if(possible_request.status_code != 404):
-                linha = f"{routes} -> {possible_request.status_code}"
-                print(linha)
-                general_results.append(linha)
+            status_code = possible_request.status_code
 
+            first_path = extract_from_path(routes)
+
+            key = (first_path, status_code)
+
+            if(key not in results):
+                results[key] = []
+
+            results[key].append(routes)
+            
         except requests.exceptions.RequestException as erro:
             print(f"ERRO: {erro}")
 
@@ -102,9 +76,13 @@ def requests_send():
         time.sleep(request_delay)
 
 def main():
+      top_level, subpaths = load_wordlists()
+      print(f"Top levels carregados: {len(top_level)}")
+      print(f"Subpaths carregados: {len(subpaths)}")
       concatenate_routes(top_level, subpaths)
       requests_send()
-      save_output()
+      save_output(results)
 
 
-main()
+if __name__ == "__main__":
+    main()
