@@ -60,43 +60,38 @@ def parse_url(url):
     return host, port, path 
 
 def create_socket(routes):
+    host, port, path = parse_url(routes)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(request_timeout)
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2)
-        
-        host, port, path = parse_url(routes)
-        
         sock.connect((host, port))
-        
         request = f"HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode()
         sock.sendall(request)
-        
+
         response = b""
-        while True:
-            chunck = sock.recv(4096)
-            if not chunck:
+        while b"\r\n\r\n" not in response:
+            chunk = sock.recv(4096)
+            if not chunk:          
                 break
-            response += chunck
+            response += chunk
+
+       
+        first_line = response.split(b"\r\n", 1)[0]
+        
+        try:
+            status_code = int(first_line.split(b" ")[1])
+        except (IndexError, ValueError):
+            status_code = 0
+        return status_code
     finally:
         sock.close()
-
-    return response
 
 
 def requests_send():
     total = len(possible_routes_api)
     for idx, routes in enumerate(possible_routes_api, 1):
         try:
-            resp_bytes_text = create_socket(routes).decode("utf-8")
-
-            if not resp_bytes_text:
-                status_code = 404
-            else:
-                first_line = resp_bytes_text.split("\r\n", 1)[0]
-                try:
-                    status_code = int(first_line.split(' ')[1])
-                except (IndexError, ValueError):
-                    status_code = 0
+            status_code = create_socket(routes)
 
             first_path = extract_from_path(routes)
             key = (first_path, status_code)

@@ -1,0 +1,218 @@
+=============================================================
+ RESUMO DE REDES E SOCKETS PARA CONTENT DISCOVERY SCANNER
+=============================================================
+
+Este documento reúne os principais conceitos abordados durante a evolução
+de um scanner de descoberta de conteúdo (content discovery scanner),
+desde o uso da biblioteca requests até a implementação com sockets puros
+em Python. O objetivo é consolidar o entendimento sobre comunicação
+HTTP, sockets, TCP, e boas práticas para ferramentas de reconhecimento.
+
+-------------------------------------------------------------
+1. POR QUE ABANDONAR A BIBLIOTECA REQUESTS?
+-------------------------------------------------------------
+
+A biblioteca `requests` é uma camada de alto nível que esconde muitos
+detalhes do protocolo HTTP. Para um scanner de descoberta, precisamos
+de controle fino sobre:
+
+- Métodos HTTP enviados (GET, HEAD, POST, etc.).
+- Cabeçalhos personalizados (User-Agent, Host, Connection).
+- Tratamento de redirecionamentos (requests os segue automaticamente,
+  o que pode esconder status 301/302).
+- Tempo de leitura e fechamento de conexões.
+- Identificação precisa de erros de rede (timeout, recusa, DNS).
+
+Ao usar sockets diretamente, ganhamos acesso a cada byte enviado e
+recebido, podendo otimizar o scanner e explorar comportamentos
+inesperados do servidor.
+
+-------------------------------------------------------------
+2. INTRODUÇÃO À BIBLIOTECA SOCKET DO PYTHON
+-------------------------------------------------------------
+
+O módulo `socket` fornece acesso à interface de sockets do sistema
+operacional. Um socket é um ponto final de comunicação bidirecional.
+
+Componentes principais:
+- Address Family (família de endereços): AF_INET (IPv4), AF_INET6 (IPv6).
+- Socket Type: SOCK_STREAM (TCP), SOCK_DGRAM (UDP).
+
+Para HTTP, usamos AF_INET e SOCK_STREAM.
+
+Fluxo básico de um cliente TCP:
+1. Criar socket: sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+2. Definir timeout: sock.settimeout(segundos)
+3. Conectar: sock.connect((host, porta))
+4. Enviar dados: sock.sendall(dados_bytes)
+5. Receber resposta: sock.recv(tamanho_maximo)
+6. Fechar: sock.close()
+
+Erros comuns:
+- socket.timeout: tempo excedido esperando resposta.
+- ConnectionRefusedError: porta fechada ou host recusou conexão.
+- socket.gaierror: falha na resolução de nome (DNS).
+- OSError: outros erros de sistema.
+
+-------------------------------------------------------------
+3. O PROTOCOLO HTTP: ESTRUTURA DE REQUISIÇÃO E RESPOSTA
+-------------------------------------------------------------
+
+Uma requisição HTTP (exemplo HEAD):
+
+    HEAD /caminho HTTP/1.1\r\n
+    Host: localhost\r\n
+    Connection: close\r\n
+    \r\n
+
+- Linha de requisição: método, caminho, versão.
+- Cabeçalhos: pares "Nome: valor".
+- Linha em branco (\r\n\r\n) indica fim dos cabeçalhos.
+
+Uma resposta HTTP:
+
+    HTTP/1.1 200 OK\r\n
+    Date: ...\r\n
+    Server: ...\r\n
+    Content-Length: 0\r\n
+    \r\n
+
+- Linha de status: versão, código de status, razão.
+- Cabeçalhos da resposta.
+- Linha em branco separa cabeçalhos do corpo (em HEAD geralmente não há corpo).
+
+O protocolo usa \r\n (CRLF) como quebra de linha.
+
+-------------------------------------------------------------
+4. LEITURA DE DADOS COM recv()
+-------------------------------------------------------------
+
+A função `recv(tamanho_maximo)` lê até o número especificado de bytes
+do socket. Ela pode retornar menos bytes do que o máximo, dependendo
+do que está disponível no buffer do sistema operacional.
+
+Exemplo:
+
+    chunk = sock.recv(4096)
+
+- 4096 é o tamanho do buffer; não significa que receberá exatamente isso.
+- Se o servidor fechar a conexão, recv retorna b"" (vazio).
+- Devido à natureza do TCP, os dados podem chegar em partes, então é
+  comum usar um loop para acumular até ter tudo.
+
+Loop típico:
+
+    response = b""
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+
+Esse loop depende do fechamento do servidor para terminar, o que é
+forçado pelo cabeçalho "Connection: close".
+
+-------------------------------------------------------------
+5. A IMPORTÂNCIA DE PARAR NO FIM DOS HEADERS
+-------------------------------------------------------------
+
+Em vez de ler até o servidor fechar, podemos detectar o fim dos
+cabeçalhos procurando pela sequência \r\n\r\n. Assim que essa
+sequência aparece, já temos o status code e podemos fechar o socket
+imediatamente, sem esperar o fechamento remoto.
+
+Vantagens:
+- Não depende do servidor fechar a conexão (evita bloqueios).
+- Não baixa corpo indesejado (mesmo em HEAD, alguns servidores enviam).
+- Aumenta a velocidade do scanner.
+
+Implementação:
+
+    response = b""
+    while b"\r\n\r\n" not in response:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+
+Depois, extraímos a primeira linha e o status code:
+
+    first_line = response.split(b"\r\n", 1)[0]
+    status_code = int(first_line.split(b" ")[1])
+
+Dessa forma, não precisamos mais do cabeçalho Connection: close como
+garantia; nós mesmos fechamos o socket no finally.
+
+-------------------------------------------------------------
+6. DECODIFICAÇÃO DE BYTES
+-------------------------------------------------------------
+
+Os cabeçalhos HTTP são em ASCII. Para extrair o status code, podemos
+trabalhar diretamente com bytes, evitando decodificação:
+
+    first_line = response.split(b"\r\n", 1)[0]
+    status_code = int(first_line.split(b" ")[1])
+
+O int() aceita bytes e converte. Isso é eficiente e evita erros de
+codificação com caracteres não-UTF-8.
+
+Se for necessário decodificar a resposta inteira, use:
+
+    texto = response.decode('utf-8', errors='ignore')
+
+Isso ignora bytes inválidos, prevenindo UnicodeDecodeError.
+
+-------------------------------------------------------------
+7. DIFERENÇAS ENTRE REQUESTS E SOCKETS
+-------------------------------------------------------------
+
+A biblioteca requests:
+- Segue redirecionamentos automaticamente.
+- Mantém conexões keep-alive por padrão.
+- Lê o corpo inteiro da resposta, mesmo que você não precise.
+- Gerencia cookies, autenticação, etc.
+
+Com sockets:
+- Você envia exatamente os bytes que quiser.
+- Controla o momento de fechar a conexão.
+- Pode parar de ler assim que tiver o suficiente.
+- Trata erros de rede de forma granular.
+
+Para um scanner de descoberta, o controle fino é essencial.
+
+-------------------------------------------------------------
+8. RECOMENDAÇÕES DE ESTUDO: UNIX NETWORK PROGRAMMING
+-------------------------------------------------------------
+
+O livro "UNIX Network Programming, Volume 1" de W. Richard Stevens é
+a referência para sockets. Capítulos recomendados:
+
+- Cap. 2: Transport Layer (TCP, UDP, SCTP) – handshake, estados.
+- Cap. 3: Sockets Introduction – estruturas de endereço, função socket.
+- Cap. 4: Elementary TCP Sockets – connect, send, recv, close.
+- Cap. 5: TCP Client/Server Example – exemplo prático.
+- Cap. 6: I/O Multiplexing – select, poll (essencial para acelerar scanner).
+- Cap. 7: Socket Options – timeouts, SO_REUSEADDR, TCP_NODELAY.
+- Cap. 11: Name and Address Conversions – getaddrinfo, resolução DNS.
+- Cap. 16: Nonblocking I/O – sockets não-bloqueantes.
+
+Esses capítulos dão a base para construir scanners rápidos usando
+multiplexação de I/O e controle total sobre o protocolo.
+
+-------------------------------------------------------------
+9. CONCLUSÃO
+-------------------------------------------------------------
+
+A jornada de um scanner de descoberta de conteúdo passa por entender
+profundamente o protocolo HTTP e a API de sockets. Começamos com
+bibliotecas de alto nível, mas evoluímos para o controle manual,
+aprendendo a otimizar a leitura, evitar dependências desnecessárias
+e preparar o terreno para técnicas avançadas de paralelização com
+select/poll.
+
+Cada conceito dominado aqui é um tijolo para construir ferramentas
+mais rápidas, robustas e eficientes.
+
+=============================================================
+ FIM DO DOCUMENTO
+=============================================================
